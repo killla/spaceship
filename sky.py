@@ -140,7 +140,6 @@ async def blink(canvas, row, column, symbol='*'):
 
 
 async def animate_ship(canvas, frame1, frame2):
-    #global starship_row, starship_column
     previous_row, previous_column = 1, 1
     while True:
 
@@ -208,11 +207,12 @@ def draw(canvas):
         for coroutine in coroutines.copy():
             try:
                 coroutine.send(None)
-                canvas.refresh()
+
             except StopIteration:
                 coroutines.remove(coroutine)
         if len(coroutines) == 0:
             break
+        canvas.refresh()
         time.sleep(TIC_TIMEOUT)
 
 
