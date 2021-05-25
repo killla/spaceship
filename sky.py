@@ -5,94 +5,31 @@ import curses
 import random
 from statistics import median
 
+from curses_tools import draw_frame, get_frame_size, read_controls
+from physics import update_speed
+from obstacles import Obstacle, show_obstacles
 
 TIC_TIMEOUT = 0.1
-SPACE_KEY_CODE = 32
-LEFT_KEY_CODE = 260
-RIGHT_KEY_CODE = 261
-UP_KEY_CODE = 259
-DOWN_KEY_CODE = 258
+
 FRAME_1_PATH = 'frames/rocket_frame_1.txt'
 FRAME_2_PATH = 'frames/rocket_frame_2.txt'
-SPEED = 5 #сколько символов перепрыгивает корабль за одно нажатие
+TRASH_PATH = 'frames/trash_large.txt'
+SPEED = 3 #сколько символов перепрыгивает корабль за одно нажатие
 starship_row, starship_column = 0, 0
+TRASH_FRAME_PATHS = [
+    'frames/duck.txt',
+    'frames/hubble.txt',
+    'frames/lamp.txt',
+    'frames/trash_large.txt',
+    'frames/trash_small.txt',
+    'frames/trash_xl.txt'
+    ]
 
-
-def read_controls(canvas):
-    """Read keys pressed and returns tuple witl controls state."""
-
-    rows_direction = columns_direction = 0
-    space_pressed = False
-
-    while True:
-        pressed_key_code = canvas.getch()
-
-        if pressed_key_code == -1:
-            # https://docs.python.org/3/library/curses.html#curses.window.getch
-            break
-
-        if pressed_key_code == UP_KEY_CODE:
-            rows_direction = -1
-
-        if pressed_key_code == DOWN_KEY_CODE:
-            rows_direction = 1
-
-        if pressed_key_code == RIGHT_KEY_CODE:
-            columns_direction = 1
-
-        if pressed_key_code == LEFT_KEY_CODE:
-            columns_direction = -1
-
-        if pressed_key_code == SPACE_KEY_CODE:
-            space_pressed = True
-
-    return rows_direction, columns_direction, space_pressed
-
-
-def draw_frame(canvas, start_row, start_column, text, negative=False):
-    """Draw multiline text fragment on canvas, erase text instead of drawing if negative=True is specified."""
-
-    rows_number, columns_number = canvas.getmaxyx()
-
-    for row, line in enumerate(text.splitlines(), round(start_row)):
-        if row < 0:
-            continue
-
-        if row >= rows_number:
-            break
-
-        for column, symbol in enumerate(line, round(start_column)):
-            if column < 0:
-                continue
-
-            if column >= columns_number:
-                break
-
-            if symbol == ' ':
-                continue
-
-            # Check that current position it is not in a lower right corner of the window
-            # Curses will raise exception in that case. Don`t ask why…
-            # https://docs.python.org/3/library/curses.html#curses.window.addch
-            if row == rows_number - 1 and column == columns_number - 1:
-                continue
-
-            symbol = symbol if not negative else ' '
-            canvas.addch(row, column, symbol)
-
-
-def get_frame_size(text):
-    """Calculate size of multiline text fragment, return pair — number of rows and colums."""
-
-    lines = text.splitlines()
-    rows = len(lines)
-    columns = max([len(line) for line in lines])
-    return rows, columns
-
+#obstacles = []
 
 async def fire(canvas, start_row, start_column, rows_speed=-0.3*SPEED, columns_speed=0):
     """Display animation of gun shot, direction and speed can be specified."""
-
+    global obstacles, obstacles_in_last_collisions
     row, column = start_row, start_column
 
     canvas.addstr(round(row), round(column), '*')
@@ -113,6 +50,11 @@ async def fire(canvas, start_row, start_column, rows_speed=-0.3*SPEED, columns_s
     curses.beep()
 
     while 0 < row < max_row and 0 < column < max_column:
+        for obstacle in obstacles:
+            if obstacle.has_collision(round(row), round(column)):
+                obstacles_in_last_collisions.append(obstacle)
+                return
+
         canvas.addstr(round(row), round(column), symbol)
         await asyncio.sleep(0)
         canvas.addstr(round(row), round(column), ' ')
@@ -123,20 +65,16 @@ async def fire(canvas, start_row, start_column, rows_speed=-0.3*SPEED, columns_s
 async def blink(canvas, row, column, symbol='*'):
     while True:
         canvas.addstr(row, column, symbol, curses.A_DIM)
-        for i in range(random.randint(10, 40)):
-            await asyncio.sleep(0)
+        await sleep(random.randint(10, 40))
 
         canvas.addstr(row, column, symbol)
-        for i in range(3):
-            await asyncio.sleep(0)
+        await sleep(3)
 
         canvas.addstr(row, column, symbol, curses.A_BOLD)
-        for i in range(5):
-            await asyncio.sleep(0)
+        await sleep(5)
 
         canvas.addstr(row, column, symbol)
-        for i in range(3):
-            await asyncio.sleep(0)
+        await sleep(3)
 
 
 async def animate_ship(canvas, frame1, frame2):
@@ -146,14 +84,52 @@ async def animate_ship(canvas, frame1, frame2):
         draw_frame(canvas, previous_row, previous_column, frame2, negative=True)
         draw_frame(canvas, starship_row, starship_column, frame1)
         previous_row, previous_column = starship_row, starship_column #запоминаем кадр для стирания в следующем фрейме
-        for i in range(1):
-            await asyncio.sleep(0)
+        await sleep()
 
         draw_frame(canvas, previous_row, previous_column, frame1, negative=True)
         draw_frame(canvas, starship_row, starship_column, frame2)
         previous_row, previous_column = starship_row, starship_column
-        for i in range(1):
+        await sleep()
+
+
+async def fly_garbage(canvas, column, garbage_frame, speed=0.5):
+    """Animate garbage, flying from top to bottom. Сolumn position will stay same, as specified on start."""
+    global obstacles, obstacles_in_last_collisions
+    rows_number, columns_number = canvas.getmaxyx()
+    frame_rows, frame_columns = get_frame_size(garbage_frame)
+
+    column = max(column, 0)
+    column = min(column, columns_number - 1)
+
+    row = 1
+
+    obstacle = Obstacle(row, column, frame_rows, frame_columns)
+    obstacles.append(obstacle)
+
+    try:
+        while row < rows_number:
+            draw_frame(canvas, row, column, garbage_frame)
             await asyncio.sleep(0)
+            draw_frame(canvas, row, column, garbage_frame, negative=True)
+            if obstacle in obstacles_in_last_collisions:
+                obstacles_in_last_collisions.remove(obstacle)
+                return
+
+            row += speed
+            obstacle.row = row
+    finally:
+        obstacles.remove(obstacle)
+
+    #await sleep()
+
+
+async def fill_orbit_with_garbage(canvas, window_rows, window_columns, trash_frames):
+    while True:
+        await sleep(random.randint(10, 50))
+        column = random.randint(1, window_columns - 2) # цифры - поправка на рамку
+        frame = random.choice(trash_frames)
+        coroutine = fly_garbage(canvas, column, frame)
+        coroutines.append(coroutine)
 
 
 async def control(canvas, window_rows, window_columns, frame_rows, frame_columns):
@@ -161,24 +137,45 @@ async def control(canvas, window_rows, window_columns, frame_rows, frame_columns
     #вычисляем правую и нижнию границу один раз при условии что размеры окна не меняются во время работы
     max_allowed_row = window_rows-frame_rows-1
     max_allowed_column = window_columns-frame_columns-1
+    row_speed = column_speed = 0
+
     while True:
         rows_direction, columns_direction, space_pressed = read_controls(canvas)
-        new_row = starship_row + rows_direction * SPEED
-        new_column = starship_column + columns_direction * SPEED
+
+        row_speed, column_speed = update_speed(row_speed, column_speed, rows_direction, columns_direction)
+        new_row = starship_row + row_speed * SPEED
+        new_column = starship_column + column_speed * SPEED
+
+        # new_row = starship_row + rows_direction * SPEED
+        # new_column = starship_column + columns_direction * SPEED
 
         starship_row = median([1, new_row, max_allowed_row])
         starship_column = median([1, new_column, max_allowed_column])
 
+        if space_pressed:
+            coroutine = fire(canvas, starship_row, starship_column + frame_columns//2) #середина коробля
+            coroutines.append(coroutine)
+
+        await asyncio.sleep(0)
+        #await sleep()
+
+
+async def sleep(tics=1):
+    for i in range(tics):
         await asyncio.sleep(0)
 
 
 def draw(canvas):
-    global starship_row, starship_column
+    global starship_row, starship_column, coroutines
+    global obstacles, obstacles_in_last_collisions
     window_rows, window_columns = curses.window.getmaxyx(canvas)
     curses.curs_set(False)
     canvas.nodelay(True)
     canvas.border()
+    obstacles = []
+    obstacles_in_last_collisions = []
 
+    #инициализация корабля
     with open(FRAME_1_PATH, 'r') as my_file:
         frame1 = my_file.read()
     with open(FRAME_2_PATH, 'r') as my_file:
@@ -188,14 +185,23 @@ def draw(canvas):
     starship_row = window_rows//2 - frame_rows//2 #середина экрана с поправкой на размер фрейма корабля
     starship_column = window_columns//2 - frame_columns//2
 
+    trash_frames = []
+    for path in TRASH_FRAME_PATHS:
+        with open(path, "r") as garbage_file:
+            frame = garbage_file.read()
+            trash_frames.append(frame)
+
     coroutines = []
     for coroutine in [
             animate_ship(canvas, frame1, frame2),
             control(canvas, window_rows, window_columns, frame_rows, frame_columns),
-            fire(canvas, starship_row, window_columns // 2)  # середина экрана с поправкой на высоту фрейма корабля
+            fire(canvas, starship_row, window_columns // 2),  # середина экрана с поправкой на высоту фрейма корабля
+            fill_orbit_with_garbage(canvas, window_rows, window_columns, trash_frames),
+            show_obstacles(canvas, obstacles)
             ]:
         coroutines.append(coroutine)
-    # звезды
+
+    # инициализация звёзд
     for i in range(100):
         row = random.randint(1, window_rows - 2) # цифры - поправка на рамку
         column = random.randint(1, window_columns - 2)
@@ -207,7 +213,6 @@ def draw(canvas):
         for coroutine in coroutines.copy():
             try:
                 coroutine.send(None)
-
             except StopIteration:
                 coroutines.remove(coroutine)
         if len(coroutines) == 0:
